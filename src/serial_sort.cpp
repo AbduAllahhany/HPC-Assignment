@@ -4,21 +4,22 @@
 
 #include "include/serial_sort.h"
 
-void merge(std::vector<int> &arr, int left,
-           int mid, int right) {
-    int n1 = mid - left + 1;
-    int n2 = right - mid;
 
-    std::vector<int> L(n1), R(n2);
+void merge(std::vector<int32_t> &arr, size_t left,
+           size_t mid, size_t right) {
+    size_t n1 = mid - left + 1;
+    size_t n2 = right - mid;
+
+    std::vector<int32_t> L(n1), R(n2);
 
     // Copy data to temp vectors L[] and R[]
-    for (int i = 0; i < n1; i++)
+    for (size_t i = 0; i < n1; i++)
         L[i] = arr[left + i];
-    for (int j = 0; j < n2; j++)
+    for (size_t j = 0; j < n2; j++)
         R[j] = arr[mid + 1 + j];
 
-    int i = 0, j = 0;
-    int k = left;
+    size_t i = 0, j = 0;
+    size_t k = left;
 
 
     while (i < n1 && j < n2) {
@@ -49,11 +50,15 @@ void merge(std::vector<int> &arr, int left,
     }
 }
 
-void mergeSort(std::vector<int> &arr, int left, int right) {
+void mergeSort(std::vector<int32_t> &arr, size_t left, size_t right) {
     if (left >= right)
         return;
-    int mid = left + (right - left) / 2;
+    size_t mid = left + (right - left) / 2;
     mergeSort(arr, left, mid);
     mergeSort(arr, mid + 1, right);
     merge(arr, left, mid, right);
+}
+
+void mergeSort(std::vector<int32_t> &arr) {
+    mergeSort(arr, 0, arr.size());
 }

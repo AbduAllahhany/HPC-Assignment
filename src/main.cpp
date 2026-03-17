@@ -1,6 +1,10 @@
+#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <utils.h>
+
+#include "serial_sort.h"
 
 struct CLISettings {
     // zero args
@@ -78,8 +82,18 @@ void validate_settings(const CLISettings &s) {
 
 int main(int argc, const char *argv[]) {
     auto settings = parse_settings(argc, argv);
-    if (settings.threads) std::cout << *settings.threads << "\n";
-    if (settings.impl) std::cout << *settings.impl << "\n";
-    if (settings.size) std::cout << *settings.size << "\n";
+    if (settings.size && settings.seed && settings.distribution) {
+        auto v = utils::generate(*settings.size, *settings.seed, *settings.distribution);
+        for (auto i: v) {
+            std::cout << i << " ";
+        }
+        std::cout << "\n----------------------------------\n";
+
+        mergeSort(v);
+        for (auto i: v) {
+            std::cout << i << " ";
+        }
+        std::cout << "\n";
+    }
     return 0;
 }
