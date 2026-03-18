@@ -14,8 +14,8 @@ All commands below are assumed to be run on Linux in a terminal.
 ### Quick Start (install deps + build)
 
 ```bash
-chmod +x install.sh
-./install.sh
+chmod +x build.sh
+./build.sh
 ```
 
 This will install `libomp-dev`, `cmake`, and `build-essential`, then build the project. The binary will be at `build/Assignment`.

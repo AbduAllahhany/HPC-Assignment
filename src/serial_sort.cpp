@@ -4,61 +4,34 @@
 
 #include "include/serial_sort.h"
 
-
-void merge(std::vector<int32_t> &arr, size_t left,
-           size_t mid, size_t right) {
-    size_t n1 = mid - left + 1;
-    size_t n2 = right - mid;
-
-    std::vector<int32_t> L(n1), R(n2);
-
-    // Copy data to temp vectors L[] and R[]
-    for (size_t i = 0; i < n1; i++)
-        L[i] = arr[left + i];
-    for (size_t j = 0; j < n2; j++)
-        R[j] = arr[mid + 1 + j];
-
-    size_t i = 0, j = 0;
-    size_t k = left;
+#include <algorithm>
 
 
-    while (i < n1 && j < n2) {
-        if (L[i] <= R[j]) {
-            arr[k] = L[i];
-            i++;
-        } else {
-            arr[k] = R[j];
-            j++;
-        }
-        k++;
+// using buffer to enhance cache locality  and don't allocate L and R vectors
+void merge(std::vector<int32_t> &arr, std::vector<int32_t> &buf,
+           size_t left, size_t mid, size_t right) {
+    for (size_t i = left; i <= mid; i++)
+        buf[i] = arr[i];
+
+    size_t i = left, j = mid + 1, k = left;
+    while (i <= mid && j <= right) {
+        if (buf[i] <= arr[j]) arr[k++] = buf[i++];
+        else arr[k++] = arr[j++];
     }
-
-    // Copy the remaining elements of L[],
-    // if there are any
-    while (i < n1) {
-        arr[k] = L[i];
-        i++;
-        k++;
-    }
-
-    // Copy the remaining elements of R[],
-    // if there are any
-    while (j < n2) {
-        arr[k] = R[j];
-        j++;
-        k++;
-    }
+    while (i <= mid)
+        arr[k++] = buf[i++];
 }
 
-void mergeSort(std::vector<int32_t> &arr, size_t left, size_t right) {
+void mergeSort(std::vector<int32_t> &arr, std::vector<int32_t> &buf, size_t left, size_t right) {
     if (left >= right)
         return;
-    size_t mid = left + (right - left) / 2;
-    mergeSort(arr, left, mid);
-    mergeSort(arr, mid + 1, right);
-    merge(arr, left, mid, right);
+    size_t mid = left + ((right - left) >> 1);
+    mergeSort(arr, buf, left, mid);
+    mergeSort(arr, buf, mid + 1, right);
+    merge(arr, buf, left, mid, right);
 }
 
 void mergeSort(std::vector<int32_t> &arr) {
-    mergeSort(arr, 0, arr.size());
+    std::vector<int32_t> buf(arr.size());
+    mergeSort(arr, buf, 0, arr.size() - 1);
 }
