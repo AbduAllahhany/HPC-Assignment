@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <iostream>
@@ -5,30 +6,20 @@
 #include <utils.h>
 
 #include "serial_sort.h"
+#include "omp_sort.h"
 
 struct CLISettings {
-    // zero args
     bool help{false};
-    // one args
-    std::optional<std::string> impl; // serial,omp,cuda
-    std::optional<int16_t> threads; // for omp
-    std::optional<int16_t> block_size; // for CUDA
-    std::optional<int16_t> grid_size; // for CUDA
-    std::optional<int16_t> repeats; //  for averaging
-    std::optional<u_int32_t> size; // for array size
-    std::optional<u_int32_t> seed; // for distribution
-    std::optional<std::string> distribution; // uniform, gaussian, nearly_sorted, reversed
-    std::optional<std::string> output; //for CSV/plots
+    std::optional<std::string> impl;
+    std::optional<int16_t> threads;
+    std::optional<int16_t> block_size;
+    std::optional<int16_t> grid_size;
+    std::optional<int16_t> repeats;
+    std::optional<u_int32_t> size;
+    std::optional<u_int32_t> seed;
+    std::optional<std::string> distribution;
+    std::optional<std::string> output;
 };
-
-/**
- * We can also use a function pointer here, ie:
- * typedef void (*NoArgHandle)(CLISettings&);
- *
- * If we're only ever going to use plain functions
- * or capture-less lambdas as handles, the plain
- * function pointer is good and marginally more performant.
- */
 
 typedef std::function<void(CLISettings &)> NoArgHandle;
 typedef std::function<void(CLISettings &, const std::string &)> OneArgHandle;
@@ -53,13 +44,12 @@ CLISettings parse_settings(int argc, const char *argv[]) {
     CLISettings settings;
     for (int i = 1; i < argc; i++) {
         std::string opt = argv[i];
-
         if (auto j = NoArgs.find(opt); j != NoArgs.end())
             j->second(settings);
         else if (auto k = OneArgs.find(opt); k != OneArgs.end())
-            if (++i < argc) {
+            if (++i < argc)
                 k->second(settings, {argv[i]});
-            } else
+            else
                 throw std::runtime_error{"missing param after " + opt};
         else
             std::cerr << "unrecognized command-line option " << opt << "\n";
@@ -76,24 +66,44 @@ void validate_settings(const CLISettings &s) {
 
     if (s.repeats && *s.repeats <= 0)
         throw std::runtime_error("--repeats must be positive");
-
-    // add more rules here
 }
 
 int main(int argc, const char *argv[]) {
     auto settings = parse_settings(argc, argv);
-    if (settings.size && settings.seed && settings.distribution) {
-        auto v = utils::generate(*settings.size, *settings.seed, *settings.distribution);
-        for (auto i: v) {
-            std::cout << i << " ";
-        }
-        std::cout << "\n----------------------------------\n";
+    validate_settings(settings);
 
-        mergeSort(v);
-        for (auto i: v) {
-            std::cout << i << " ";
-        }
-        std::cout << "\n";
+    if (!settings.size || !settings.seed || !settings.distribution) {
+        std::cerr << "Usage: --size N --seed S --distribution D [--impl {serial,omp}] [--threads T]\n";
+        return 1;
     }
+
+    auto v = utils::generate(*settings.size, *settings.seed, *settings.distribution);
+    int repeats = settings.repeats.value_or(1);
+    std::string impl = settings.impl.value_or("serial");
+    int threads = settings.threads.value_or(4);
+
+    double total_ms = 0.0;
+    for (int r = 0; r < repeats; r++) {
+        auto arr = v;
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        // CUDA Still missing until now
+        if (impl == "omp") {
+            ompMergeSort(arr, threads);
+        } else {
+            mergeSort(arr);
+        }
+
+        auto t1 = std::chrono::high_resolution_clock::now();
+        total_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+    }
+
+    std::cout << "impl=" << impl
+              << " size=" << *settings.size
+              << " dist=" << *settings.distribution
+              << " threads=" << (impl == "omp" ? threads : 1)
+              << " avg_ms=" << (total_ms / repeats)
+              << "\n";
+
     return 0;
 }
