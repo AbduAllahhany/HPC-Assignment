@@ -3,10 +3,13 @@
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <unordered_map>
 #include <utils.h>
 
-#include "serial_sort.h"
+#include "cuda_bitonic_sort.h"
 #include "omp_sort.h"
+#include "serial_bitonic_sort.h"
+#include "serial_sort.h"
 
 struct CLISettings {
     bool help{false};
@@ -73,7 +76,8 @@ int main(int argc, const char *argv[]) {
     validate_settings(settings);
 
     if (!settings.size || !settings.seed || !settings.distribution) {
-        std::cerr << "Usage: --size N --seed S --distribution D [--impl {serial,omp}] [--threads T]\n";
+        std::cerr << "Usage: --size N --seed S --distribution D [--impl {serial,serial_bitonic,omp,cuda}] "
+                     "[--threads T] [--block_size B] [--grid_size G]\n";
         return 1;
     }
 
@@ -81,15 +85,19 @@ int main(int argc, const char *argv[]) {
     int repeats = settings.repeats.value_or(1);
     std::string impl = settings.impl.value_or("serial");
     int threads = settings.threads.value_or(4);
+    const int cuda_threads_per_block = settings.block_size.value_or(512);
 
     double total_ms = 0.0;
     for (int r = 0; r < repeats; r++) {
         auto arr = v;
         auto t0 = std::chrono::high_resolution_clock::now();
 
-        // CUDA Still missing until now
         if (impl == "omp") {
             ompMergeSort(arr, threads);
+        } else if (impl == "serial_bitonic") {
+            serialBitonicSort(arr);
+        } else if (impl == "cuda") {
+            cudaBitonicSort(arr, cuda_threads_per_block);
         } else {
             mergeSort(arr);
         }
@@ -101,9 +109,12 @@ int main(int argc, const char *argv[]) {
     std::cout << "impl=" << impl
               << " size=" << *settings.size
               << " dist=" << *settings.distribution
-              << " threads=" << (impl == "omp" ? threads : 1)
-              << " avg_ms=" << (total_ms / repeats)
-              << "\n";
+              << " threads=" << (impl == "omp" ? threads : 1);
+    if (impl == "cuda")
+        std::cout << " block_size=" << cuda_threads_per_block;
+    if (impl == "cuda" && settings.grid_size)
+        std::cout << " grid_size=" << *settings.grid_size;
+    std::cout << " avg_ms=" << (total_ms / repeats) << "\n";
 
     return 0;
 }
