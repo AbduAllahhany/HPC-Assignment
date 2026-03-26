@@ -41,6 +41,9 @@
 *.out
 *.app
 
+# Python venv (see scripts/setup_python_env.sh)
+.venv/
+
 # Build directories
 build/
 Build/
@@ -69,3 +72,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+
+experiments/
+.venv/
+report/

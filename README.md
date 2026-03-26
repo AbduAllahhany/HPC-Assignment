@@ -1,75 +1,143 @@
-## Assignment - Sorting Benchmark
+# HPC Assignment — Sorting Benchmarks (Serial / OpenMP / CUDA)
 
-This project is a C++ sorting benchmark with different implementations (serial, OpenMP, CUDA) and configurable input distributions.
+C++20 sorting implementations with:
+
+- **Serial merge sort** (`serial`)
+- **Serial bitonic sort** (`serial_bitonic`)
+- **OpenMP merge sort** (`omp`)
+- **CUDA bitonic sort** (`cuda`, only when CUDA toolkit is found at configure time)
+
+The repository also includes a repeatable experiment runner that writes CSV results, generates speedup plots (optional), and emits short Markdown performance summaries under `report/`.
+
+## Build
 
 ### Prerequisites
 
-- **CMake** (version 3.20 or newer)
-- **C++ compiler** with C++20 support (e.g. `g++` 11+ or `clang++` 13+)
-- **OpenMP** (`libomp-dev`) — required for the `omp` implementation
-- **CUDA toolkit** for the `cuda` implementation
+- **CMake** \(\>= 3.20\)
+- **C++ compiler** with C++20 support
+- **OpenMP** (required)
+- **CUDA toolkit** (optional; enables the CUDA bitonic implementation if found)
 
-All commands below are assumed to be run on Linux in a terminal.
-
-### Quick Start (install deps + build)
+### Build command
 
 ```bash
-chmod +x build.sh
 ./build.sh
 ```
 
-This will install `libomp-dev`, `cmake`, and `build-essential`, then build the project. The binary will be at `build/Assignment`.
+Outputs are placed in `build/`.
 
-### Run Instructions
+### Produced executables
 
-From inside the `build` directory:
+- `build/Assingment`: main benchmark CLI (note the spelling)
+- `build/sort_correctness_test`: correctness test binary (also runnable via CTest)
 
-```bash
-./Assignment [options]
-```
+## Run a single benchmark (CLI)
 
-#### Supported options
+The main binary prints one line including `avg_ms=...`, which is what the scripts parse.
 
-| Flag | Value | Description |
-|---|---|---|
-| `--help`, `-h` | — | Show help |
-| `--impl` | `serial` \| `omp` \| `cuda` | Select implementation |
-| `--threads` | `<n>` | Number of threads (only with `--impl omp`) |
-| `--block_size` | `<n>` | CUDA block size (only with `--impl cuda`) |
-| `--grid_size` | `<n>` | CUDA grid size (only with `--impl cuda`) |
-| `--size` | `<n>` | Array length |
-| `--seed` | `<n>` | RNG seed for reproducibility |
-| `--distribution` | `uniform` \| `gaussian` \| `nearly_sorted` \| `reversed` | Input distribution |
-| `--repeats` | `<n>` | Number of timed runs to average (default: 1) |
-| `--output` | `<path>` | Output path for CSV/plots |
-
-### Example Commands
-
-From `build`:
+### Usage
 
 ```bash
-# Serial — 1M elements, uniform distribution
-./Assignment --impl serial --size 1000000 --seed 42 --distribution uniform
-
-# OpenMP — 4M elements, 8 threads, averaged over 5 runs
-./Assignment --impl omp --threads 8 --size 4194304 --seed 42 --distribution uniform --repeats 5
-
-# Nearly-sorted input with 4 threads
-./Assignment --impl omp --threads 4 --size 1048576 --seed 7 --distribution nearly_sorted
-
-# Reversed input, serial baseline
-./Assignment --impl serial --size 2097152 --seed 1 --distribution reversed --repeats 3
+./build/Assingment --size N --seed S --distribution D \
+  [--impl {serial,serial_bitonic,omp,cuda}] \
+  [--threads T] \
+  [--block_size B] \
+  [--grid_size G] \
+  [--repeats R]
 ```
 
-Output format:
+### Examples
+
+Serial merge sort:
+
+```bash
+./build/Assingment --impl serial --size 1048576 --seed 42 --distribution uniform --repeats 3
 ```
-impl=omp size=4194304 dist=uniform threads=8 avg_ms=38.42
+
+OpenMP merge sort:
+
+```bash
+./build/Assingment --impl omp --threads 8 --size 1048576 --seed 42 --distribution gaussian --repeats 3
 ```
 
-### Notes
+CUDA bitonic sort (only if CUDA was enabled at build time):
 
-- The exact behavior (sorting algorithm, output format, etc.) is defined in the source files under src/ and src/utils/.
-- If CMake or the compiler cannot find CUDA or OpenMP, you can still build and use the serial implementation.
+```bash
+./build/Assingment --impl cuda --block_size 512 --size 1048576 --seed 42 --distribution uniform --repeats 3
+```
 
+## Correctness tests
 
+### Run via CTest
+
+```bash
+cd build
+ctest --output-on-failure
+```
+
+### Run directly
+
+```bash
+./build/sort_correctness_test
+```
+
+Notes:
+
+- If CUDA is not available (built without CUDA, no GPU, or runtime errors), CUDA tests are **skipped** while CPU paths are still validated.
+
+## Run the full experiment matrix
+
+The experiment runner builds (if needed), runs multiple trials across sizes/distributions/threads (and CUDA block sizes if CUDA is enabled), then aggregates results and generates plots/reports.
+
+```bash
+./scripts/run_experiments.sh
+```
+
+### Common options
+
+```bash
+./scripts/run_experiments.sh \
+  --trials 5 \
+  --seed 42 \
+  --run-id my_run \
+  --sizes "1000000,1048576,2097152,4194304" \
+  --dists "uniform,gaussian,nearly_sorted,reversed" \
+  --omp-threads "2,4,8,16" \
+  --cuda-blocks "128,256,512,1024"
+```
+
+### Outputs
+
+For a run id `<run_id>`, results are written under:
+
+- `experiments/<run_id>/raw_trials.csv`: all raw timings (one row per trial)
+- `experiments/<run_id>/summary.csv`: aggregated means/stdevs + speedup columns
+- `experiments/<run_id>/plots/`: PNG plots (if matplotlib is available)
+- `experiments/<run_id>/system_info.txt`: system + build info snapshot
+- `experiments/<run_id>/commands_executed.txt`: the exact commands run
+- `experiments/<run_id>/merge_omp/`: subset analysis for merge serial vs OpenMP
+- `experiments/<run_id>/bitonic/`: subset analysis for bitonic/cuda vs merge-serial
+
+The analysis script also writes short Markdown highlights into `report/`:
+
+- `report/performance_analysis.md`
+- `report/performance_analysis_merge_omp.md`
+- `report/performance_analysis_bitonic.md`
+
+## Python plotting (optional)
+
+Plots are generated only if `matplotlib` is importable.
+
+- `requirements.txt` contains:
+  - `matplotlib>=3.8`
+
+If `matplotlib` is missing, the runner still writes CSVs and reports; PNGs may be absent.
+
+## Project layout
+
+- `src/`: implementations (serial, OpenMP, CUDA/stub) + utilities
+- `tests/`: correctness test (`sort_correctness_test.cpp`)
+- `scripts/`: experiment runner + CSV/plot/report generator
+- `report/`: generated Markdown summaries
+- `experiments/`: generated run artifacts (CSV/plots/system info)
 

@@ -21,7 +21,6 @@ struct CLISettings {
     std::optional<u_int32_t> size;
     std::optional<u_int32_t> seed;
     std::optional<std::string> distribution;
-    std::optional<std::string> output;
 };
 
 typedef std::function<void(CLISettings &)> NoArgHandle;
@@ -40,7 +39,6 @@ const std::unordered_map<std::string, OneArgHandle> OneArgs{
     {"--size", [](CLISettings &s, const std::string &arg) { s.size = std::stoul(arg); }},
     {"--seed", [](CLISettings &s, const std::string &arg) { s.seed = std::stoul(arg); }},
     {"--distribution", [](CLISettings &s, const std::string &arg) { s.distribution = arg; }},
-    {"--output", [](CLISettings &s, const std::string &arg) { s.output = arg; }},
 };
 
 CLISettings parse_settings(int argc, const char *argv[]) {

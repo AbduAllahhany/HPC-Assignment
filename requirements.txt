@@ -1,0 +1,2 @@
+# Used by scripts/run_experiments.sh for speedup plots (PNG).
+matplotlib>=3.8
