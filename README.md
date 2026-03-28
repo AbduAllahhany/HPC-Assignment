@@ -7,7 +7,9 @@ C++20 sorting implementations with:
 - **OpenMP merge sort** (`omp`)
 - **CUDA bitonic sort** (`cuda`, only when CUDA toolkit is found at configure time)
 
-The repository also includes a repeatable experiment runner that writes CSV results, generates speedup plots (optional), and writes a **`report.md` inside each experiment output folder** (full matrix, `merge_omp/`, and `bitonic/`). Optional highlights can also be written under `report/` if you enable that path in the analysis step.
+The repository also includes a repeatable experiment runner that writes CSV results, generates speedup plots (optional),
+and writes a **`report.md` inside each experiment output folder** (full matrix, `merge_omp/`, and `bitonic/`). Optional
+highlights can also be written under `report/` if you enable that path in the analysis step.
 
 ## Build
 
@@ -54,6 +56,12 @@ Serial merge sort:
 ./build/Assingment --impl serial --size 1048576 --seed 42 --distribution uniform --repeats 3
 ```
 
+Serial bitonic sort:
+
+```bash
+./build/Assingment --impl serial_bitonic --size 1048576 --seed 42 --distribution uniform --repeats 3
+```
+
 OpenMP merge sort:
 
 ```bash
@@ -83,11 +91,14 @@ ctest --output-on-failure
 
 Notes:
 
-- If CUDA is not available (built without CUDA, no GPU, or runtime errors), CUDA tests are **skipped** while CPU paths are still validated.
+- If CUDA is not available (built without CUDA, no GPU, or runtime errors), CUDA tests are **skipped** while CPU paths
+  are still validated.
 
 ## Run the full experiment matrix
 
-The experiment runner builds (if needed), runs multiple trials across sizes/distributions/threads (and CUDA block sizes if CUDA is enabled), then aggregates results, writes **`report.md`** under each output directory, and generates plots when matplotlib is available.
+The experiment runner builds (if needed), runs multiple trials across sizes/distributions/threads (and CUDA block sizes
+if CUDA is enabled), then aggregates results, writes **`report.md`** under each output directory, and generates plots
+when matplotlib is available.
 
 ```bash
 ./scripts/run_experiments.sh
@@ -113,20 +124,22 @@ For a run id `<run_id>`, results are written under:
 - `experiments/<run_id>/raw_trials.csv`: all raw timings (one row per trial)
 - `experiments/<run_id>/summary.csv`: aggregated means/stdevs + speedup columns
 - `experiments/<run_id>/report.md`: **auto-generated** summary (fastest config per size/distribution)
-- `experiments/<run_id>/plots/`: PNG plots (if matplotlib is available), including `plots/timing_comparison/timing_<distribution>_bars.png` (grouped mean-time bars per implementation, log scale)
+- `experiments/<run_id>/plots/`: PNG plots (if matplotlib is available), including
+  `plots/timing_comparison/timing_<distribution>_bars.png` (grouped mean-time bars per implementation, log scale)
 - `experiments/<run_id>/system_info.txt`: system + build info snapshot
 - `experiments/<run_id>/commands_executed.txt`: the exact commands run
 - `experiments/<run_id>/merge_omp/`: subset CSVs, plots, and **`merge_omp/report.md`** (serial merge vs OpenMP only)
 - `experiments/<run_id>/bitonic/`: subset CSVs, plots, and **`bitonic/report.md`** (merge vs serial bitonic vs CUDA)
 
-The analysis script is `scripts/analyze_performance.py`. It writes `summary.csv` and `report.md` under `--out_dir`, and PNGs under `--plot_dir` (unless `--no-plots`).
+The analysis script is `scripts/analyze_performance.py`. It writes `summary.csv` and `report.md` under `--out_dir`, and
+PNGs under `--plot_dir` (unless `--no-plots`).
 
 ## Python plotting (optional)
 
 Plots are generated only if `matplotlib` is importable.
 
 - `requirements.txt` contains:
-  - `matplotlib>=3.8`
+    - `matplotlib>=3.8`
 
 If `matplotlib` is missing, the runner still writes CSVs and `report.md` files; PNGs may be absent.
 
