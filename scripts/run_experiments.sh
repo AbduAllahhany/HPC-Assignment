@@ -245,14 +245,14 @@ MERGE_ANALYZE=("${PYTHON_BIN}" "${ROOT_DIR}/scripts/analyze_performance.py" --ra
 BITONIC_ANALYZE=("${PYTHON_BIN}" "${ROOT_DIR}/scripts/analyze_performance.py" --raw "${BITONIC_DIR}/raw_trials.csv" --out_dir "${BITONIC_DIR}" --plot_dir "${BITONIC_DIR}/plots" --category bitonic --seed "${SEED}")
 
 {
-  echo "${FULL_ANALYZE[*]} --no-report"
-  echo "${MERGE_ANALYZE[*]} --no-report"
-  echo "${BITONIC_ANALYZE[*]} --no-report"
+  echo "${FULL_ANALYZE[*]}"
+  echo "${MERGE_ANALYZE[*]}"
+  echo "${BITONIC_ANALYZE[*]}"
 } >> "${commands_executed_txt}"
 
-"${FULL_ANALYZE[@]}" --no-report
-"${MERGE_ANALYZE[@]}" --no-report
-"${BITONIC_ANALYZE[@]}" --no-report
+"${FULL_ANALYZE[@]}"
+"${MERGE_ANALYZE[@]}"
+"${BITONIC_ANALYZE[@]}"
 
 echo "Done. ${OUT_DIR}"
 echo "  summary + plots + report.md: ${OUT_DIR}/  ${MERGE_OMP_DIR}/  ${BITONIC_DIR}/"

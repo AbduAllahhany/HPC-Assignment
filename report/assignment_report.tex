@@ -1,0 +1,365 @@
+% HPC Assignment — Sorting Benchmarks (Serial / OpenMP / CUDA)
+% Compile: pdflatex assignment_report.tex (run twice if using \tableofcontents)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+% Optional figures: build succeeds if PNGs are not yet in report/graph/ (copy from experiments/<run_id>/plots/)
+\newcommand{\reportinclude}[1]{%
+  \IfFileExists{#1}{%
+    \includegraphics[width=\linewidth]{#1}%
+  }{%
+    \fbox{%
+      \parbox[c][0.22\textheight][c]{0.95\linewidth}{%
+        \centering\small\sffamily
+        \textbf{[Plot file missing]}\\[0.6em]
+        \scriptsize
+        Copy PNGs from \texttt{experiments/<run\_id>/plots/} into \texttt{report/graph/} after
+        \texttt{./scripts/run\_experiments.sh}.%
+      }%
+    }%
+  }%
+}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{placeins}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black, citecolor=blue!60!black}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{black!30},
+  backgroundcolor=\color{black!3},
+  columns=fullflexible,
+  showstringspaces=false,
+}
+
+\title{High-Performance Computing Assignment:\\
+Sorting Benchmarks on CPU and GPU}
+\author{HPC Course — Sorting Implementations Report}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report documents a C++20 benchmarking project that compares four sorting paths on the same input generator: serial merge sort, serial bitonic sort, OpenMP task-parallel merge sort, and CUDA bitonic sort (when the CUDA toolkit is available at configure time). The work includes a command-line benchmark driver, CMake-based builds with optional CUDA, automated correctness tests, and a shell/Python pipeline that records raw timings, aggregates statistics, and emits Markdown summaries and optional plots. We summarize the algorithms, software architecture, experimental methodology, and representative results from a full-matrix run on Linux with an NVIDIA GPU.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%----------------------------------------------------------------------
+\section{Introduction and objectives}
+
+The goal of this assignment is to study how classical sorting algorithms behave when mapped to different parallel execution models: a single CPU thread, multiple CPU threads via OpenMP, and massively parallel SIMD-style execution on a GPU via CUDA. Rather than comparing unrelated algorithms in isolation, the project fixes a common workload generator (array size, random seed, and input distribution) so that wall-clock time differences reflect implementation and hardware mapping choices.
+
+Concrete objectives include:
+\begin{itemize}[noitemsep]
+  \item Implement \emph{merge sort} in serial form and again with OpenMP tasks, reusing the same merge routine for fair comparison.
+  \item Implement \emph{bitonic sort} on the CPU (serial) and on the GPU (CUDA), including padding to the next power of two where the algorithm requires it.
+  \item Provide reproducible benchmarks (CLI + scripts), aggregate results into CSV, and document outcomes in generated reports.
+  \item Validate correctness across sizes and distributions, including non-power-of-two lengths where bitonic padding matters.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Theoretical background}
+
+\subsection{Merge sort}
+Merge sort divides the array into halves, sorts each half recursively, and merges the sorted halves in linear time. Its time complexity is $O(n \log n)$ in the worst case. The merge step is sequential along the merge front but offers natural parallelization at the recursion level: independent subproblems can be solved concurrently if the scheduler assigns them to different threads.
+
+\subsection{Bitonic sort}
+Bitonic sort is a comparison network that sorts in $O(\log^2 n)$ parallel steps for $n$ a power of two. For general $n$, implementations typically pad the array to $n' = 2^{\lceil \log_2 n \rceil}$ with a sentinel larger than any real key (here, \texttt{INT32\_MAX}), sort the padded region, then truncate. Bitonic sort performs more work than merge sort asymptotically on a serial machine, but its regular compare-exchange pattern maps well to GPU threads.
+
+\subsection{OpenMP task parallelism}
+OpenMP 3.0+ \emph{tasks} let the programmer express recursive parallelism: a \texttt{single} thread in a parallel region creates tasks for subproblems; \texttt{taskwait} synchronizes before merging. Cutoffs are used to limit task creation overhead and to switch to a fast serial sort for tiny subarrays.
+
+\subsection{CUDA execution model}
+CUDA kernels launch a grid of thread blocks; threads in a block can cooperate via shared memory and barriers. The CUDA bitonic implementation uses global kernels for larger comparison stages and a shared-memory kernel for stages that fit in on-chip memory, reducing global memory traffic for those passes.
+
+%----------------------------------------------------------------------
+\section{Implementation overview}
+
+\subsection{Repository layout}
+\begin{itemize}[noitemsep]
+  \item \texttt{src/} — sorting implementations and array generation utilities.
+  \item \texttt{src/include/} — headers for serial merge, OpenMP merge, serial bitonic, CUDA bitonic, and utilities.
+  \item \texttt{tests/sort\_correctness\_test.cpp} — CTest-driven correctness checks.
+  \item \texttt{scripts/run\_experiments.sh} — builds (if needed), runs the benchmark matrix, calls the analyzer.
+  \item \texttt{scripts/analyze\_performance.py} — CSV aggregation, speedup columns, plots (if Matplotlib is available), \texttt{report.md} per output directory.
+\end{itemize}
+
+\subsection{Build system (CMake)}
+\texttt{CMakeLists.txt} requires C++20 and OpenMP. It probes for the CUDA toolkit; if found, the \texttt{.cu} bitonic source is compiled and linked against the CUDA runtime. Otherwise a stub translation unit is used so CPU-only builds still link. Two executables are produced:
+\begin{itemize}[noitemsep]
+  \item \texttt{build/Assingment} — main benchmark CLI (name as in the project).
+  \item \texttt{build/sort\_correctness\_test} — correctness binary, also registered as a CTest test.
+\end{itemize}
+
+\subsection{Serial merge sort}
+The serial merge sort uses a single auxiliary buffer \texttt{buf} of length $n$. The merge routine copies the left subrange into \texttt{buf}, then merges from \texttt{buf} and the right half of \texttt{arr} back into \texttt{arr}. This avoids allocating fresh left/right vectors on each merge, improving cache locality and reducing allocator pressure.
+
+\subsection{OpenMP merge sort}
+The parallel version reuses the same \texttt{merge} function from the serial module. Recursion uses OpenMP tasks. Two compile-time thresholds control when to parallelize and when to stop dividing the problem:
+
+\paragraph{Why \texttt{TASK\_CUTOFF} $\approx 2^{12}$ (4096).}
+OpenMP tasks are not free: each task carries creation, scheduling, and bookkeeping cost. If we spawned a task for every recursive split down to very small subarrays, that overhead would dominate the actual sorting work and can even slow the program below a good serial merge sort. We therefore use the \texttt{if(right - left >= TASK\_CUTOFF)} clause so that only subproblems whose span is at least about 4096 elements become tasks; smaller splits still recurse, but execute inline on the same thread without a new task. The value $2^{12}$ is a conventional order of magnitude---large enough that the child has substantial work to amortize task overhead, yet small enough that the recursion tree still exposes plenty of parallel subproblems for typical array sizes. It sits in the same ballpark as cutoffs used in other task-based divide-and-conquer codes (often 1k--8k elements); the exact optimum is machine- and runtime-dependent and could be tuned empirically.
+
+\paragraph{Why \texttt{SORT\_CUTOFF} = 32.}
+Below a certain size, pure merge recursion is inefficient: each level pays for recursive calls and merges on tiny ranges where constant factors matter more than asymptotics. The standard fix is to \emph{base case} into a small-array sort. Here, when \texttt{right - left < SORT\_CUTOFF}, we call \texttt{std::sort} on that segment. The library implementation is highly tuned for short ranges (e.g.\ hybrid strategies), so this is typically faster than continuing merge sort for only a few dozen elements. The choice 32 is a common default for merge-sort leaves (values in the 16--64 range are typical); it balances avoiding deep merge chains on specks of data without making the leaf chunks so large that we waste parallel structure near the bottom of the tree.
+
+A parallel region wraps a \texttt{single} thread that spawns the initial tasks; \texttt{taskwait} ensures both halves are sorted before merging.
+
+\subsection{Serial bitonic sort}
+Non-power-of-two inputs are padded with \texttt{INT32\_MAX}. The classic double loop over stage length, block starts, compare distance, and indices performs compare-and-swap with direction (ascending/descending) determined by block parity. After sorting, the vector is resized back to the original length.
+
+\subsection{CUDA bitonic sort}
+Host code pads to the next power of two, allocates device memory, and copies the array to the GPU. For each stage $s = 1,\ldots,\log_2 n$, the implementation runs:
+\begin{itemize}[noitemsep]
+  \item \textbf{Global kernels} for passes that do not fit the shared-memory tile: each thread handles one compare-exchange pair according to stage and pass indices.
+  \item \textbf{Shared-memory kernel} for the remaining passes within the tile size $2 \times \text{threadsPerBlock}$: data is loaded into shared memory, bitonic steps run with \texttt{\_\_syncthreads}, then results are written back.
+\end{itemize}
+\texttt{threadsPerBlock} must be a positive power of two. The implementation synchronizes the device before copying results back and truncating to the original size.
+
+\subsection{Input generation (\texttt{utils::generate})}
+The benchmark driver requires \texttt{--size}, \texttt{--seed}, and \texttt{--distribution}. Supported distributions include:
+\begin{itemize}[noitemsep]
+  \item \texttt{uniform} — full-range 32-bit integers.
+  \item \texttt{gaussian} / \texttt{normal} — clipped Gaussian values.
+  \item \texttt{nearly\_sorted} — sorted base array plus $\Theta(\sqrt{n})$ random swaps.
+  \item \texttt{reversed} — values in descending order after sorting the progression in reverse.
+  \item \texttt{nearly\_sorted\_k} — windowed near-sorted variant (available in the generator; matrix scripts use the main set above).
+\end{itemize}
+The same seed and distribution name produce identical inputs across implementations, which is essential for fair timing comparisons.
+
+\subsection{Benchmark driver (\texttt{main.cpp})}
+The program parses CLI flags, validates combinations (e.g.\ \texttt{--threads} only with \texttt{omp}, CUDA options only with \texttt{cuda}), generates the vector, and runs the chosen implementation for \texttt{--repeats} trials (default 1). Each trial copies the original vector (so sorts do not mutate the shared baseline across repeats), measures elapsed time with \texttt{std::chrono::high\_resolution\_clock}, and averages. One line is printed, including \texttt{avg\_ms=...}, which the experiment scripts parse.
+
+\subsection{Correctness testing}
+\texttt{sort\_correctness\_test} runs multiple sizes (including non-powers of two), seeds, and distributions. For each case it compares outputs against a reference (serial merge) and checks non-decreasing order. CUDA tests are skipped automatically if the build uses the stub or if GPU allocation fails (e.g.\ no GPU in CI), so CPU paths remain validated.
+
+%----------------------------------------------------------------------
+\section{Experimental methodology}
+
+\subsection{Running the full matrix}
+The experiment shell script optionally ensures Matplotlib (for PNG plots), writes a system-info snapshot (uname, CPU count, GPU model if available, toolchain versions), and executes the benchmark binary for each combination of:
+\begin{itemize}[noitemsep]
+  \item array sizes (default CSV: $10^6$, $2^{20}$, $2^{21}$, $2^{22}$),
+  \item distributions (\texttt{uniform}, \texttt{gaussian}, \texttt{nearly\_sorted}, \texttt{reversed}),
+  \item OpenMP thread counts (default: 2, 4, 8, 16),
+  \item CUDA block sizes (default: 128, 256, 512, 1024), when CUDA is enabled,
+  \item multiple trials per configuration (\texttt{--trials}, default 5 in the script; the sample run below used 1 trial).
+\end{itemize}
+
+Raw rows are appended to \texttt{experiments/<run\_id>/raw\_trials.csv}. The analyzer writes \texttt{summary.csv} with means, standard deviations, speedup versus serial merge, and optional efficiency columns; it emits \texttt{report.md} in the run directory and in category subfolders \texttt{merge\_omp/} (serial merge vs OpenMP only) and \texttt{bitonic/} (serial merge vs serial bitonic vs CUDA only). PNG plots are written under \texttt{plots/} when Matplotlib imports successfully, including grouped bar charts of mean wall time per implementation under \texttt{plots/timing\_comparison/} (logarithmic time axis).
+
+\subsection{Metrics}
+\begin{itemize}[noitemsep]
+  \item \textbf{Mean wall time} (\texttt{avg\_ms}) — primary comparison metric from the CLI average over repeats/trials.
+  \item \textbf{Speedup vs serial merge} — ratio of serial merge mean time to the implementation mean time for the same $(n, \text{dist}, \text{seed})$.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Representative results}
+
+The following tables summarize run \texttt{20260328\_151408} (seed 42, 1 trial per configuration) on Linux (12 logical CPUs) with an NVIDIA GeForce RTX 3050 Laptop GPU. They are illustrative; your numbers will differ with hardware, compiler flags, and \texttt{--trials}.
+
+\subsection{Full matrix: fastest configuration per size and distribution}
+Among serial merge, serial bitonic, OpenMP merge (all thread counts), and CUDA bitonic (all block sizes), the fastest configuration was:
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{Fastest implementation per problem size and distribution (full matrix).}
+  \begin{tabular}{@{}rrllr@{}}
+    \toprule
+    $n$ & \multicolumn{1}{c}{Distribution} & Fastest & Mean (ms) & vs serial merge \\
+    \midrule
+    1\,000\,000 & gaussian & OpenMP, 16 threads & 67.14 & $4.06\times$ \\
+    1\,000\,000 & nearly\_sorted & OpenMP, 16 threads & 41.31 & $3.55\times$ \\
+    1\,000\,000 & reversed & OpenMP, 16 threads & 38.60 & $3.91\times$ \\
+    1\,000\,000 & uniform & OpenMP, 16 threads & 67.82 & $4.05\times$ \\
+    1\,048\,576 & gaussian & OpenMP, 16 threads & 71.89 & $3.96\times$ \\
+    1\,048\,576 & nearly\_sorted & OpenMP, 16 threads & 51.75 & $3.24\times$ \\
+    1\,048\,576 & reversed & OpenMP, 16 threads & 41.78 & $3.92\times$ \\
+    1\,048\,576 & uniform & OpenMP, 16 threads & 74.12 & $3.95\times$ \\
+    2\,097\,152 & gaussian & CUDA, block 512 & 150.42 & $3.99\times$ \\
+    2\,097\,152 & nearly\_sorted & OpenMP, 16 threads & 87.89 & $3.92\times$ \\
+    2\,097\,152 & reversed & OpenMP, 16 threads & 84.21 & $3.79\times$ \\
+    2\,097\,152 & uniform & OpenMP, 16 threads & 149.75 & $4.04\times$ \\
+    4\,194\,304 & gaussian & CUDA, block 256 & 174.71 & $7.36\times$ \\
+    4\,194\,304 & nearly\_sorted & CUDA, block 512 & 173.69 & $4.08\times$ \\
+    4\,194\,304 & reversed & CUDA, block 256 & 172.54 & $3.97\times$ \\
+    4\,194\,304 & uniform & CUDA, block 256 & 176.91 & $7.17\times$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Win counts in that run: OpenMP with 16 threads won 11 of 16 cells; CUDA block sizes 256 and 512 won the remainder. Serial bitonic is not competitive on the CPU for these sizes (expected given $O(n \log^2 n)$ work and bitonic structure).
+
+\subsection{Merge track only (serial vs OpenMP)}
+When restricted to serial merge and OpenMP merge, OpenMP with 16 threads won every cell in this run, with speedups in the $3.2\times$--$4.3\times$ range versus serial merge. This isolates the benefit of task-parallel merge sort without GPU participation.
+
+\subsection{Bitonic track (serial merge vs serial bitonic vs CUDA)}
+This subset excludes OpenMP. At $n=10^6$, serial merge sometimes wins on \texttt{nearly\_sorted} data (favorable cache and predictability for merge), and CUDA wins or ties many cases depending on block size---but GPU launch and transfer overhead matters at smaller $n$. At $n=2^{22}$, CUDA bitonic achieves large speedups over serial merge (e.g.\ $7.2\times$--$7.4\times$ for uniform/gaussian with block 256 in this run).
+
+\subsection{Speedup plots}
+The following figures are PNG exports from \texttt{scripts/analyze\_performance.py}, stored under \texttt{report/graph/} (copy from \texttt{experiments/<run\_id>/plots/} after a run, or regenerate by pointing \texttt{--plot\_dir} to the desired folder). They correspond to run \texttt{20260328\_151408} (seed~42). The $y$-axis is speedup versus serial merge; dotted horizontal lines in the OpenMP plots mark ideal linear speedup at each thread count.
+
+\begin{figure}[p]
+  \centering
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/speedup_merge_omp_uniform.png}
+    \caption{\texttt{uniform}}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/speedup_merge_omp_gaussian.png}
+    \caption{\texttt{gaussian}}
+  \end{subfigure}
+
+  \vspace{0.6em}
+
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/speedup_merge_omp_nearly_sorted.png}
+    \caption{\texttt{nearly\_sorted}}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/speedup_merge_omp_reversed.png}
+    \caption{\texttt{reversed}}
+  \end{subfigure}
+  \caption{OpenMP merge sort: speedup vs serial merge by array size (log$_2$ scale) and thread count.}
+  \label{fig:merge-omp-speedup}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/speedup_bitonic_uniform.png}
+    \caption{\texttt{uniform}}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/speedup_bitonic_gaussian.png}
+    \caption{\texttt{gaussian}}
+  \end{subfigure}
+
+  \vspace{0.6em}
+
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/speedup_bitonic_nearly_sorted.png}
+    \caption{\texttt{nearly\_sorted}}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/speedup_bitonic_reversed.png}
+    \caption{\texttt{reversed}}
+  \end{subfigure}
+  \caption{Serial bitonic and CUDA bitonic: speedup vs serial merge (OpenMP configurations omitted from this plot family).}
+  \label{fig:bitonic-cuda-speedup}
+\end{figure}
+
+\FloatBarrier
+
+\subsection{Timing comparison (mean wall time)}
+
+Speedup plots above are \emph{normalized} to serial merge. The figures below show \emph{absolute} mean wall time (milliseconds) per implementation and array size (logarithmic time axis; numeric labels on the bars).
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/timing_comparison/timing_uniform_bars.png}
+    \caption{\texttt{uniform}}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/timing_comparison/timing_gaussian_bars.png}
+    \caption{\texttt{gaussian}}
+  \end{subfigure}
+
+  \vspace{0.6em}
+
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/timing_comparison/timing_nearly_sorted_bars.png}
+    \caption{\texttt{nearly\_sorted}}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \reportinclude{graph/timing_comparison/timing_reversed_bars.png}
+    \caption{\texttt{reversed}}
+  \end{subfigure}
+  \caption{Full matrix: mean wall time by array size and implementation (log scale). Missing configurations appear as pale bars.}
+  \label{fig:timing-bars}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Discussion}
+
+\paragraph{CPU vs GPU crossover.}
+OpenMP merge sort is strong across the tested CPU sizes because merge sort is efficient sequentially and the implementation avoids excessive task creation. CUDA becomes attractive when $n$ is large enough that kernel parallelism and throughput amortize host--device transfers and launch latency. The nearly-sorted and reversed cases often favor the CPU merge baseline at smaller $n$.
+
+\paragraph{Bitonic on CPU.}
+Serial bitonic is included as a reference and for correctness alignment with the GPU algorithm; it is not intended to beat merge sort on a single core for large $n$.
+
+\paragraph{Reproducibility.}
+Fixing \texttt{--seed} and the distribution name ensures identical inputs across \texttt{--impl} values. Increasing \texttt{--trials} and \texttt{--repeats} reduces variance from OS scheduling and turbo frequencies; reporting mean and standard deviation (in \texttt{summary.csv}) is recommended for formal submissions.
+
+\paragraph{Fairness.}
+All timed paths receive a fresh copy of the data vector per repeat inside the driver, so in-place sorts do not benefit from partially sorted state across trials.
+
+%----------------------------------------------------------------------
+\section{Conclusion}
+
+The project delivers a cohesive toolchain: four sorting paths behind one CLI, optional CUDA integration via CMake, correctness tests with CUDA skip-on-failure behavior, and automated experiments with CSV and Markdown reporting. Empirically, OpenMP merge sort provided consistent speedups on the test machine for $n$ up to $2^{21}$, while CUDA bitonic sort dominated at $n=2^{22}$ for several distributions once overhead was amortized. The split reports (\texttt{merge\_omp}, \texttt{bitonic}) help separate ``shared-memory parallel merge'' effects from ``GPU bitonic vs CPU baselines.''
+
+%----------------------------------------------------------------------
+\section*{Acknowledgments}
+Tooling: CMake, OpenMP, optional NVIDIA CUDA toolkit, Python~3 with Matplotlib for plots.
+
+%----------------------------------------------------------------------
+\appendix
+\section{Command-line usage}
+
+\begin{lstlisting}[language=bash]
+./build/Assingment --size N --seed S --distribution D \
+  [--impl {serial,serial_bitonic,omp,cuda}] \
+  [--threads T] [--block_size B] [--repeats R]
+\end{lstlisting}
+
+Examples:
+\begin{lstlisting}[language=bash]
+./build/Assingment --impl serial --size 1048576 --seed 42 \
+  --distribution uniform --repeats 3
+./build/Assingment --impl omp --threads 8 --size 1048576 --seed 42 \
+  --distribution gaussian --repeats 3
+./build/Assingment --impl cuda --block_size 512 --size 1048576 \
+  --seed 42 --distribution uniform --repeats 3
+\end{lstlisting}
+
+\section{Building and testing}
+
+\begin{lstlisting}[language=bash]
+./build.sh
+cd build && ctest --output-on-failure
+./scripts/run_experiments.sh --trials 5 --seed 42
+\end{lstlisting}
+
+\end{document}

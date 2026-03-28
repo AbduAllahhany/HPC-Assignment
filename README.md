@@ -21,7 +21,7 @@ The repository also includes a repeatable experiment runner that writes CSV resu
 ### Build command
 
 ```bash
-./build.sh
+./script/build.sh
 ```
 
 Outputs are placed in `build/`.
@@ -112,20 +112,14 @@ For a run id `<run_id>`, results are written under:
 
 - `experiments/<run_id>/raw_trials.csv`: all raw timings (one row per trial)
 - `experiments/<run_id>/summary.csv`: aggregated means/stdevs + speedup columns
-- `experiments/<run_id>/report.md`: **auto-generated** summary (fastest config per size/distribution, win counts, notes)
+- `experiments/<run_id>/report.md`: **auto-generated** summary (fastest config per size/distribution)
 - `experiments/<run_id>/plots/`: PNG plots (if matplotlib is available), including `plots/timing_comparison/timing_<distribution>_bars.png` (grouped mean-time bars per implementation, log scale)
 - `experiments/<run_id>/system_info.txt`: system + build info snapshot
 - `experiments/<run_id>/commands_executed.txt`: the exact commands run
 - `experiments/<run_id>/merge_omp/`: subset CSVs, plots, and **`merge_omp/report.md`** (serial merge vs OpenMP only)
 - `experiments/<run_id>/bitonic/`: subset CSVs, plots, and **`bitonic/report.md`** (merge vs serial bitonic vs CUDA)
 
-The analysis script is `scripts/analyze_performance.py`. It **always** writes `report.md` into the directory passed as `--out_dir`. The experiment runner invokes it with `--no-report`, which **only** skips the optional project-level Markdown files under `report/`:
-
-- `report/performance_analysis.md`
-- `report/performance_analysis_merge_omp.md`
-- `report/performance_analysis_bitonic.md`
-
-To emit those as well, remove `--no-report` from the three `analyze_performance.py` invocations in `scripts/run_experiments.sh`, or run the analyzer manually without that flag.
+The analysis script is `scripts/analyze_performance.py`. It writes `summary.csv` and `report.md` under `--out_dir`, and PNGs under `--plot_dir` (unless `--no-plots`).
 
 ## Python plotting (optional)
 
@@ -135,12 +129,4 @@ Plots are generated only if `matplotlib` is importable.
   - `matplotlib>=3.8`
 
 If `matplotlib` is missing, the runner still writes CSVs and `report.md` files; PNGs may be absent.
-
-## Project layout
-
-- `src/`: implementations (serial, OpenMP, CUDA/stub) + utilities
-- `tests/`: correctness test (`sort_correctness_test.cpp`)
-- `scripts/`: experiment runner + CSV/plot/report generator
-- `report/`: optional generated Markdown summaries (only if analysis is run without `--no-report`)
-- `experiments/`: generated run artifacts (CSV, plots, `report.md`, system info)
 
