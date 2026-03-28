@@ -238,6 +238,217 @@ def _import_plt():
     return plt
 
 
+# Order matches scripts/run_experiments.sh defaults; used when ordering series found in summary.
+_TIMING_OMP_THREADS_DEFAULT = [2, 4, 8, 16]
+_TIMING_CUDA_BLOCKS_DEFAULT = [128, 256, 512, 1024]
+
+
+def _timing_omp_threads_from_summary(summary: list[dict[str, Any]]) -> list[int]:
+    avail = sorted({int(r["threads"]) for r in summary if str(r["impl"]) == "omp"})
+    if not avail:
+        return []
+    ordered = [x for x in _TIMING_OMP_THREADS_DEFAULT if x in avail]
+    rest = sorted(x for x in avail if x not in ordered)
+    return ordered + rest
+
+
+def _timing_cuda_blocks_from_summary(summary: list[dict[str, Any]]) -> list[int]:
+    avail = sorted({int(r["block_size"]) for r in summary if str(r["impl"]) == "cuda"})
+    if not avail:
+        return []
+    ordered = [x for x in _TIMING_CUDA_BLOCKS_DEFAULT if x in avail]
+    rest = sorted(x for x in avail if x not in ordered)
+    return ordered + rest
+
+
+def _sizes_for_timing_wide_table(summary: list[dict[str, Any]], dist: str, effective_seed: int) -> list[int]:
+    return sorted({int(r["size"]) for r in summary if str(r["dist"]) == dist and int(r["seed"]) == effective_seed})
+
+
+def _timing_curve_points(
+    summary: list[dict[str, Any]],
+    dist: str,
+    effective_seed: int,
+    impl: str,
+    threads: int | None,
+    block_size: int | None,
+) -> list[tuple[int, float, float]]:
+    pts: list[tuple[int, float, float]] = []
+    for r in summary:
+        if str(r["dist"]) != dist or int(r["seed"]) != effective_seed:
+            continue
+        if str(r["impl"]) != impl:
+            continue
+        th = int(r["threads"])
+        bs = int(r["block_size"])
+        if impl in ("serial", "serial_bitonic"):
+            if th != 1 or bs != 0:
+                continue
+        elif impl == "omp":
+            if threads is None or th != threads or bs != 0:
+                continue
+        elif impl == "cuda":
+            if block_size is None or bs != block_size:
+                continue
+        else:
+            continue
+        pts.append((int(r["size"]), float(r["mean_ms"]), float(r["stdev_ms"])))
+    pts.sort(key=lambda t: t[0])
+    return pts
+
+
+def _timing_series_defs(
+    category: str,
+    omp_threads: list[int],
+    cuda_blocks: list[int],
+) -> list[tuple[str, str, int | None, int | None, str, str, str]]:
+    mk = ["o", "s", "^", "v", "D", "P", "X", "h", "*", "p"]
+    serial_c = ["#2196F3", "#03A9F4"]
+    omp_c = ["#4CAF50", "#66BB6A", "#81C784", "#A5D6A7"]
+    cuda_c = ["#FF9800", "#FFB74D", "#FFCC80", "#FFE0B2"]
+    allowed = _allowed_impls_for_category(category)
+    want_serial = allowed is None or "serial" in allowed
+    want_bitonic = allowed is None or "serial_bitonic" in allowed
+    want_omp = allowed is None or "omp" in allowed
+    want_cuda = allowed is None or "cuda" in allowed
+    series_defs: list[tuple[str, str, int | None, int | None, str, str, str]] = []
+    if want_serial:
+        series_defs.append(("Serial Merge", "serial", None, None, serial_c[0], "-", mk[0]))
+    if want_bitonic:
+        series_defs.append(("Serial Bitonic", "serial_bitonic", None, None, serial_c[1], "-", mk[1]))
+    if want_omp:
+        for i, th in enumerate(omp_threads):
+            series_defs.append(
+                (f"OMP {th}T", "omp", th, None, omp_c[i % len(omp_c)], "--", mk[2 + (i % 4)])
+            )
+    if want_cuda:
+        for i, bs in enumerate(cuda_blocks):
+            series_defs.append(
+                (f"CUDA B={bs}", "cuda", None, bs, cuda_c[i % len(cuda_c)], ":", mk[6 + (i % 4)])
+            )
+    return series_defs
+
+
+def plot_timing_comparison_per_distribution(
+    summary: list[dict[str, Any]],
+    plot_dir: Path,
+    effective_seed: int,
+    dist_columns: list[str],
+    category: str,
+) -> None:
+    """
+    Write under plot_dir/timing_comparison/:
+    - timing_<dist>_bars.png — grouped bars per array size, log Y, labels on bars
+    """
+    if not dist_columns:
+        return
+    try:
+        plt = _import_plt()
+    except Exception:
+        print(traceback.format_exc())
+        return
+
+    omp_threads = _timing_omp_threads_from_summary(summary)
+    cuda_blocks = _timing_cuda_blocks_from_summary(summary)
+    series_defs = _timing_series_defs(category, omp_threads, cuda_blocks)
+    if not series_defs:
+        return
+
+    def size_axis_label(n: int) -> str:
+        if n > 0 and (n & (n - 1)) == 0:
+            k = int(math.log2(n))
+            return f"$2^{{{k}}}$"
+        return str(n)
+
+    def repeats_hint(dist: str, seed: int) -> str:
+        sub = [r for r in summary if str(r["dist"]) == dist and int(r["seed"]) == seed]
+        if not sub:
+            return "?"
+        ts = sorted({int(r["n_trials"]) for r in sub})
+        if len(ts) == 1:
+            return str(ts[0])
+        return f"{ts[0]}–{ts[-1]}"
+
+    n_bars = len(series_defs)
+    bar_w = 0.72 / n_bars if n_bars else 0.1
+
+    subdir = plot_dir / "timing_comparison"
+    subdir.mkdir(parents=True, exist_ok=True)
+
+    for dist in dist_columns:
+        safe = dist.replace("/", "_").replace(" ", "_")
+        title_suffix = f"(distribution={dist}, seed={effective_seed}, repeats={repeats_hint(dist, effective_seed)})"
+
+        sizes = _sizes_for_timing_wide_table(summary, dist, effective_seed)
+        if not sizes:
+            continue
+
+        n_groups = len(sizes)
+        x_centers = list(range(n_groups))
+
+        fig_b, ax_b = plt.subplots(figsize=(16, 8))
+        for bi, (disp, impl, th, bs, color, _ls, _mk) in enumerate(series_defs):
+            heights: list[float] = []
+            for sz in sizes:
+                pts = _timing_curve_points(summary, dist, effective_seed, impl=impl, threads=th, block_size=bs)
+                v: float | None = None
+                for szz, m, _st in pts:
+                    if szz == sz:
+                        v = float(m)
+                        break
+                if v is not None and math.isfinite(v) and v > 0:
+                    heights.append(v)
+                else:
+                    heights.append(float("nan"))
+
+            offset = (bi - n_bars / 2 + 0.5) * bar_w
+            xpos = [xc + offset for xc in x_centers]
+            plot_heights: list[float] = []
+            bar_colors: list[str] = []
+            for h in heights:
+                if math.isfinite(h) and h > 0:
+                    plot_heights.append(h)
+                    bar_colors.append(color)
+                else:
+                    plot_heights.append(1e-6)
+                    bar_colors.append("#e0e0e0")
+            bars = ax_b.bar(
+                xpos,
+                plot_heights,
+                width=bar_w * 0.92,
+                label=disp,
+                color=bar_colors,
+                edgecolor="white",
+                linewidth=0.5,
+                zorder=3,
+            )
+            for bar, h_raw in zip(bars, heights):
+                if not math.isfinite(h_raw) or h_raw <= 0:
+                    continue
+                ax_b.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    h_raw,
+                    f"{h_raw:.0f}" if h_raw >= 10 else f"{h_raw:.1f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    fontweight="bold",
+                )
+
+        ax_b.set_yscale("log")
+        ax_b.set_xlabel("Array Size", fontsize=13, fontweight="bold")
+        ax_b.set_ylabel("Average Time (ms)  [log scale]", fontsize=13, fontweight="bold")
+        ax_b.set_title(f"Sorting Benchmark — All Implementations\n{title_suffix}", fontsize=15, fontweight="bold")
+        ax_b.set_xticks(x_centers)
+        ax_b.set_xticklabels([size_axis_label(int(s)) for s in sizes], fontsize=13)
+        ax_b.legend(loc="upper left", fontsize=9, ncol=2, framealpha=0.9)
+        ax_b.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
+        ax_b.set_axisbelow(True)
+        fig_b.tight_layout()
+        fig_b.savefig(subdir / f"timing_{safe}_bars.png", dpi=180, bbox_inches="tight")
+        plt.close(fig_b)
+
+
 def plot_speedup_merge_omp(
     summary: list[dict[str, Any]],
     dist: str,
@@ -473,6 +684,22 @@ def write_experiment_report_md(
     )
     for k in sorted(impl_counts.keys(), key=lambda x: (-impl_counts[x], x)):
         lines.append(f"- **{k}:** {impl_counts[k]} / {len(winners)} cells")
+
+    dists_timing = sorted({str(r["dist"]) for r in sub})
+    lines.extend(
+        [
+            "",
+            "## Timing comparison (mean wall time)",
+            "",
+            "Grouped bar charts with a logarithmic time axis (one PNG per distribution). "
+            "Files are written under `plots/timing_comparison/` when analysis runs with plotting enabled.",
+            "",
+        ]
+    )
+    for d in dists_timing:
+        safe = d.replace("/", "_").replace(" ", "_")
+        lines.append(f"- `plots/timing_comparison/timing_{safe}_bars.png` — `{d}`")
+
     if category == "full":
         lines.extend(
             [
@@ -576,6 +803,11 @@ def write_report(
         lines.append("- **CUDA**: (none)")
 
     lines.append("")
+    lines.append(
+        "Plots under the run's `plots/` directory include speedup curves and, when Matplotlib is available, "
+        "`timing_comparison/timing_<distribution>_bars.png` (grouped bars of mean time per implementation, log scale)."
+    )
+    lines.append("")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -622,6 +854,10 @@ def main() -> None:
                     plot_speedup_bitonic(summary, dist, plot_dir / f"speedup_bitonic_{dist}.png", effective_seed)
                 except Exception:
                     print(traceback.format_exc())
+        try:
+            plot_timing_comparison_per_distribution(summary, plot_dir, effective_seed, dists, cat)
+        except Exception:
+            print(traceback.format_exc())
 
     if not args.no_report:
         rname = args.report_name if args.report_name else default_report_filename(args.category)

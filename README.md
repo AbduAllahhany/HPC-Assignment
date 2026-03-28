@@ -113,7 +113,7 @@ For a run id `<run_id>`, results are written under:
 - `experiments/<run_id>/raw_trials.csv`: all raw timings (one row per trial)
 - `experiments/<run_id>/summary.csv`: aggregated means/stdevs + speedup columns
 - `experiments/<run_id>/report.md`: **auto-generated** summary (fastest config per size/distribution, win counts, notes)
-- `experiments/<run_id>/plots/`: PNG plots (if matplotlib is available)
+- `experiments/<run_id>/plots/`: PNG plots (if matplotlib is available), including `plots/timing_comparison/timing_<distribution>_bars.png` (grouped mean-time bars per implementation, log scale)
 - `experiments/<run_id>/system_info.txt`: system + build info snapshot
 - `experiments/<run_id>/commands_executed.txt`: the exact commands run
 - `experiments/<run_id>/merge_omp/`: subset CSVs, plots, and **`merge_omp/report.md`** (serial merge vs OpenMP only)
