@@ -54,7 +54,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=None, help="Only load rows for this RNG seed.")
     p.add_argument("--no-plots", action="store_true", dest="no_plots", help="Skip PNG plots.")
-    p.add_argument("--no-report", action="store_true", dest="no_report", help="Skip Markdown report.")
+    p.add_argument(
+        "--no-report",
+        action="store_true",
+        dest="no_report",
+        help="Skip project report/ Markdown only; out_dir/report.md is still written.",
+    )
     return p.parse_args()
 
 
@@ -325,6 +330,186 @@ def plot_speedup_bitonic(
     plt.close(fig)
 
 
+def _experiment_config_label(r: dict[str, Any]) -> str:
+    impl = str(r["impl"])
+    th = int(r["threads"])
+    bs = int(r["block_size"])
+    if impl == "omp":
+        return f"OpenMP, {th} threads"
+    if impl == "cuda":
+        return f"CUDA, block size {bs}"
+    if impl == "serial_bitonic":
+        return "Serial bitonic"
+    return "Serial merge"
+
+
+def _allowed_impls_for_category(category: str) -> set[str] | None:
+    if category == "merge_omp":
+        return {"serial", "omp"}
+    if category == "bitonic":
+        return {"serial", "serial_bitonic", "cuda"}
+    return None
+
+
+def _filter_summary_for_experiment_report(
+    summary: list[dict[str, Any]], category: str, effective_seed: int
+) -> list[dict[str, Any]]:
+    allowed = _allowed_impls_for_category(category)
+    out: list[dict[str, Any]] = []
+    for r in summary:
+        if int(r["seed"]) != effective_seed:
+            continue
+        impl = str(r["impl"])
+        if allowed is not None and impl not in allowed:
+            continue
+        if impl == "serial" and int(r["threads"]) != 1:
+            continue
+        out.append(r)
+    return out
+
+
+def _winner_rows_by_size_dist(sub: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """For each (size, dist), return (best_row, serial_merge_row_or_none)."""
+    groups: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+    for r in sub:
+        groups[(int(r["size"]), str(r["dist"]))].append(r)
+
+    out: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+    for key in sorted(groups.keys()):
+        rs = groups[key]
+        best = min(rs, key=lambda x: float(x["mean_ms"]))
+        serial = next(
+            (
+                x
+                for x in rs
+                if str(x["impl"]) == "serial" and int(x["threads"]) == 1 and int(x["block_size"]) == 0
+            ),
+            None,
+        )
+        out.append((best, serial))
+    return out
+
+
+def write_experiment_report_md(
+    out_dir: Path,
+    category: str,
+    summary: list[dict[str, Any]],
+    effective_seed: int,
+    raw_path: Path,
+) -> None:
+    """Write experiments/<run>/report.md (or merge_omp/bitonic/report.md) from summary stats."""
+    sub = _filter_summary_for_experiment_report(summary, category, effective_seed)
+    if not sub:
+        return
+
+    run_id = str(sub[0].get("run_id", ""))
+    n_trials_vals = {int(r["n_trials"]) for r in sub}
+    n_trials_lo = min(n_trials_vals)
+    n_trials_hi = max(n_trials_vals)
+    trials_note = f"{n_trials_lo}" if n_trials_lo == n_trials_hi else f"{n_trials_lo}–{n_trials_hi}"
+
+    if category == "full":
+        title = "Experiment report (full matrix)"
+        intro = (
+            "Compares **serial merge**, **serial bitonic**, **OpenMP merge** (varying threads), "
+            "and **CUDA bitonic** (varying block size). Fastest = lowest mean wall time per configuration."
+        )
+    elif category == "merge_omp":
+        title = "Experiment report: merge vs OpenMP"
+        intro = "Compares **serial merge** and **OpenMP parallel merge** only."
+    else:
+        title = "Experiment report: merge vs bitonic vs CUDA"
+        intro = "Compares **serial merge**, **serial bitonic**, and **CUDA bitonic** only."
+
+    lines: list[str] = [
+        f"# {title}",
+        "",
+        f"- **Run ID:** `{run_id}` · **Seed:** {effective_seed} · **Trials per config:** {trials_note}",
+        f"- **Raw trials:** `{raw_path.name}` · **Summary:** `summary.csv`",
+        "",
+        intro,
+        "",
+        "## Fastest configuration per array size and distribution",
+        "",
+        "| n | Distribution | Fastest | Mean (ms) | vs serial merge |",
+        "|---|--------------|---------|------------|-----------------|",
+    ]
+
+    winners = _winner_rows_by_size_dist(sub)
+    impl_counts: dict[str, int] = defaultdict(int)
+
+    for best, serial in winners:
+        n = int(best["size"])
+        dist = str(best["dist"])
+        label = _experiment_config_label(best)
+        mean_ms = float(best["mean_ms"])
+        impl_key = str(best["impl"])
+        if impl_key == "omp":
+            impl_key = f"omp:{int(best['threads'])}"
+        elif impl_key == "cuda":
+            impl_key = f"cuda:{int(best['block_size'])}"
+        impl_counts[impl_key] = impl_counts.get(impl_key, 0) + 1
+
+        if serial is not None and math.isfinite(mean_ms) and mean_ms > 0:
+            base = float(serial["mean_ms"])
+            if math.isfinite(base) and base > 0:
+                su = base / mean_ms
+                vs_ser = f"{su:.2f}×"
+            else:
+                vs_ser = "—"
+        else:
+            vs_ser = "—"
+
+        lines.append(
+            f"| {n:,} | {dist} | {label} | {mean_ms:.2f} | {vs_ser} |",
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Quick counts (how often each implementation wins)",
+            "",
+        ]
+    )
+    for k in sorted(impl_counts.keys(), key=lambda x: (-impl_counts[x], x)):
+        lines.append(f"- **{k}:** {impl_counts[k]} / {len(winners)} cells")
+    if category == "full":
+        lines.extend(
+            [
+                "",
+                "## Notes",
+                "",
+                "- **vs serial merge** is the ratio of mean serial-merge time to mean time of the winning row (same `n`, distribution, seed).",
+                "- At smaller `n`, OpenMP often wins; CUDA can dominate at large `n` for uniform/gaussian data on GPU-equipped runs.",
+                "- **Serial bitonic** is expected to be much slower than merge-sort baselines; see `speedup_vs_serial` in `summary.csv`.",
+            ]
+        )
+    elif category == "merge_omp":
+        lines.extend(
+            [
+                "",
+                "## Notes",
+                "",
+                "- Speedups vs serial merge match the `speedup_vs_serial` column in `summary.csv` for the winning OpenMP row.",
+                "- If OpenMP wins every cell, scaling is still limited by memory bandwidth; check `parallel_efficiency` in the CSV.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "## Notes",
+                "",
+                "- **Serial merge** can beat CUDA at small `n` or when input is **nearly sorted** / **reversed** (CPU merge advantages + GPU launch overhead).",
+                "- Compare with the OpenMP merge track in the parent run’s `merge_omp/report.md` when available.",
+            ]
+        )
+
+    out_path = out_dir / "report.md"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def write_report(
     args: argparse.Namespace,
     raw_path: Path,
@@ -418,6 +603,11 @@ def main() -> None:
     seeds_in_data = sorted({_parse_int(r.get("seed"), 0) for r in rows})
     effective_seed = args.seed if args.seed is not None else seeds_in_data[0]
     cat = args.category
+
+    try:
+        write_experiment_report_md(out_dir, cat, summary, effective_seed, raw_path)
+    except Exception:
+        print(traceback.format_exc())
     dists = sorted({str(r.get("dist", "")) for r in rows})
 
     if not args.no_plots:

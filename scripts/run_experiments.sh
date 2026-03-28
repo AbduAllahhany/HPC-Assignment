@@ -74,7 +74,7 @@ Options:
   --cuda-blocks CSV    CUDA threads per block, comma-separated (default: ${CUDA_BLOCKS_CSV})
   -h, --help           Show this help
 
-Output: experiments/<run_id>/raw_trials.csv, merge_omp/, bitonic/, summaries, plots.
+Output: experiments/<run_id>/raw_trials.csv, merge_omp/, bitonic/, summaries, plots, and report.md in each of those three directories (from analyze_performance.py).
 EOF
 }
 
@@ -255,4 +255,4 @@ BITONIC_ANALYZE=("${PYTHON_BIN}" "${ROOT_DIR}/scripts/analyze_performance.py" --
 "${BITONIC_ANALYZE[@]}" --no-report
 
 echo "Done. ${OUT_DIR}"
-echo "  summary + plots: ${OUT_DIR}/  ${MERGE_OMP_DIR}/  ${BITONIC_DIR}/"
+echo "  summary + plots + report.md: ${OUT_DIR}/  ${MERGE_OMP_DIR}/  ${BITONIC_DIR}/"
